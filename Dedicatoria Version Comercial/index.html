@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>I love you</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <main class="stage" id="stage">
+    <canvas id="rain-canvas" class="layer rain" aria-hidden="true"></canvas>
+
+    <canvas id="glow-canvas" class="layer glow" aria-hidden="true"></canvas>
+
+    <canvas id="heart-canvas" class="layer" role="img"
+            aria-label="Un corazón formado por las palabras I love you"></canvas>
+
+    <div id="recipient-name" class="recipient-name">(Nombre)</div>
+
+    <div id="gate" class="gate">
+      <p class="gate-line">&gt; 1 mensaje nuevo<span class="gate-cursor" aria-hidden="true"></span></p>
+      <button id="gate-button" class="gate-button" type="button">Mensaje en tu sistema. . . ;)</button>
+    </div>
+  </main>
+
+  <audio id="bg-audio" src="assets/lyrics.mp3" preload="auto" loop></audio>
+
+  <noscript>
+    <p style="color:#ff0033;font-family:Georgia,serif;text-align:center;position:fixed;inset:auto 0 40% 0;">
+      Activa JavaScript para ver la dedicatoria.
+    </p>
+  </noscript>
+</body>
+</html>
