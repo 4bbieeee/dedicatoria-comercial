@@ -36,8 +36,34 @@
     glowEnabled: true,
     glowIntensity: 0.9,
     glowBlurEm: 0.7,
-    breathing: true,
-    breathingSeconds: 4.5,
+
+    heartbeat: {
+      enabled: true,
+      periodMs: 1700,
+      scale: 0.045,
+      rampMs: 1800
+    },
+
+    fx: {
+      sparkMax: 150,
+      sparkRateBuild: 42,
+      sparkRateIdle: 12,
+      burstOnBeat: 16,
+      tapBurst: 24,
+      glitchMinMs: 6000,
+      glitchMaxMs: 10000,
+      parallaxX: 14,
+      parallaxY: 10,
+      auraEnabled: true
+    },
+
+    boot: {
+      steps: [
+        { text: '> acceso concedido', speed: 24, pause: 160 },
+        { text: '> descifrando mensaje', speed: 24, pause: 180, progress: 900 },
+        { text: '> I love you', speed: 48, pause: 420 }
+      ]
+    },
 
     audioVolume: 0.8,
     gateFadeMs: 1000,
@@ -102,15 +128,28 @@
   const heartCanvas = document.getElementById('heart-canvas');
   const glowCanvas = document.getElementById('glow-canvas');
   const rainCanvas = document.getElementById('rain-canvas');
+  const fxCanvas = document.getElementById('fx-canvas');
   const nameEl = document.getElementById('recipient-name');
   const gate = document.getElementById('gate');
   const gateButton = document.getElementById('gate-button');
   const audioEl = document.getElementById('bg-audio');
-  if (!stage || !heartCanvas || !glowCanvas || !nameEl) return;
+  const auraEl = document.getElementById('aura');
+  const rainWrap = document.getElementById('rain-wrap');
+  const parallaxEl = document.getElementById('parallax');
+  const glitchEl = document.getElementById('glitch');
+  const beatEl = document.getElementById('beat');
+  const bootEl = document.getElementById('boot');
+  const bootTextEl = document.getElementById('boot-text');
+  const flashEl = document.getElementById('flash');
+
+  if (!stage || !heartCanvas || !glowCanvas || !rainCanvas || !fxCanvas || !nameEl ||
+      !gate || !gateButton || !auraEl || !rainWrap || !parallaxEl || !glitchEl ||
+      !beatEl || !bootEl || !bootTextEl || !flashEl) return;
 
   const ctx = heartCanvas.getContext('2d');
   const gctx = glowCanvas.getContext('2d');
-  const rctx = rainCanvas ? rainCanvas.getContext('2d') : null;
+  const rctx = rainCanvas.getContext('2d');
+  const fctx = fxCanvas.getContext('2d');
   const bakedCanvas = document.createElement('canvas');
   const bctx = bakedCanvas.getContext('2d');
   const measureCtx = document.createElement('canvas').getContext('2d');
@@ -119,7 +158,6 @@
   const rootStyle = document.documentElement.style;
   rootStyle.setProperty('--heart-color', CONFIG.color);
   rootStyle.setProperty('--glow-max', String(CONFIG.glowIntensity));
-  rootStyle.setProperty('--breathe-duration', CONFIG.breathingSeconds + 's');
 
   const nameParam = new URLSearchParams(window.location.search).get('nombre');
   if (nameParam && nameParam.trim()) nameEl.textContent = nameParam.trim().slice(0, 48);
@@ -146,6 +184,28 @@
     return { xMin, xMax, yMin, yMax };
   })();
 
+  const HEART_OUTLINE = (() => {
+    const points = [];
+    const total = 180;
+    for (let i = 0; i < total; i++) {
+      const angle = (i / total) * Math.PI * 2;
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      let last = 0;
+      for (let r = 0.02; r <= 1.7; r += 0.01) {
+        if (isInsideHeart(dx * r, dy * r)) last = r;
+      }
+      let lo = last;
+      let hi = last + 0.01;
+      for (let k = 0; k < 14; k++) {
+        const mid = (lo + hi) / 2;
+        if (isInsideHeart(dx * mid, dy * mid)) lo = mid; else hi = mid;
+      }
+      points.push({ hx: dx * lo, hy: dy * lo });
+    }
+    return points;
+  })();
+
   function heartDepth(x, y) {
     let lo = 0.02, hi = 1.6;
     for (let i = 0; i < 22; i++) {
@@ -157,19 +217,39 @@
 
   let words = [];
   let rain = null;
+  let fxGeom = null;
+  let sparks = [];
+  let ripples = [];
   let dpr = 1;
   let fontPx = 16;
   let glowBlurPx = 10;
   let settled = 0;
+  let shown = 0;
   let finished = false;
+  let finishedAt = 0;
+  let lastCycle = -1;
+  let glowControlled = false;
   let started = false;
-  let entered = !gate || !gateButton;
+  let entered = false;
+  let booting = false;
+  let heartRunning = false;
   let t0 = 0;
   let rafId = 0;
   let rainRafId = 0;
+  let fxRafId = 0;
+  let bootRafId = 0;
   let rainLast = 0;
+  let fxLast = 0;
+  let bootStart = 0;
+  let nextGlitch = 0;
+  let sparkAcc = 0;
+  let pointerX = 0;
+  let pointerY = 0;
+  let parX = 0;
+  let parY = 0;
   let resizeTimer = 0;
   let gateTimer = 0;
+  let bootHideTimer = 0;
 
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -177,17 +257,35 @@
   const nameFontCss = (px) => `${CONFIG.nameFontWeight} ${px}px ${CONFIG.nameFontFamily}`;
   const easeOutCubic = (u) => 1 - Math.pow(1 - clamp(u, 0, 1), 3);
   const easeInOutSine = (u) => 0.5 * (1 - Math.cos(Math.PI * clamp(u, 0, 1)));
+  const pulse = (u, center, width) => Math.exp(-Math.pow((u - center) / width, 2));
   const jitterOf = (x, y) => {
     const v = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
     return v - Math.floor(v) - 0.5;
   };
 
+  function makeSprite(rgb) {
+    const size = 64;
+    const c = document.createElement('canvas');
+    c.width = size;
+    c.height = size;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, `rgba(${rgb}, 1)`);
+    grad.addColorStop(0.35, `rgba(${rgb}, 0.4)`);
+    grad.addColorStop(1, `rgba(${rgb}, 0)`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    return c;
+  }
+
+  const SPRITE_RED = makeSprite('255, 40, 80');
+  const SPRITE_WHITE = makeSprite('255, 235, 240');
+
   function setupCanvases(W, H) {
     dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDevicePixelRatio);
     const pxW = Math.round(W * dpr);
     const pxH = Math.round(H * dpr);
-    const visible = [heartCanvas, glowCanvas];
-    if (rainCanvas) visible.push(rainCanvas);
+    const visible = [heartCanvas, glowCanvas, rainCanvas, fxCanvas];
     visible.concat([bakedCanvas]).forEach((c) => { c.width = pxW; c.height = pxH; });
     visible.forEach((c) => {
       c.style.width = W + 'px';
@@ -461,7 +559,7 @@
 
   function drawRain(now) {
     const r = rain;
-    if (!r || !rctx) return;
+    if (!r) return;
     const rc = CONFIG.rain;
 
     rctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -495,18 +593,18 @@
       if (slot.phase === 'idle') continue;
 
       let alpha = rc.lineAlpha;
-      let shown = slot.text;
+      let shownText = slot.text;
       if (slot.phase === 'typing') {
-        shown = slot.text.slice(0, Math.floor((slot.timer / 1000) * rc.lineCharsPerSecond));
+        shownText = slot.text.slice(0, Math.floor((slot.timer / 1000) * rc.lineCharsPerSecond));
       } else if (slot.phase === 'fade') {
         alpha *= 1 - slot.timer / rc.lineFadeMs;
       }
 
       rctx.fillStyle = `rgba(${rc.lineColor}, ${alpha.toFixed(3)})`;
-      rctx.fillText(shown, slot.x, slot.y);
+      rctx.fillText(shownText, slot.x, slot.y);
 
       if (cursorOn && slot.phase !== 'fade') {
-        const cursorX = slot.x + rctx.measureText(shown).width + 1;
+        const cursorX = slot.x + rctx.measureText(shownText).width + 1;
         rctx.fillRect(cursorX, slot.y - r.lineFontSize * 0.5, r.lineCharW * 0.6, r.lineFontSize);
       }
     }
@@ -522,7 +620,7 @@
   }
 
   function startRain() {
-    if (!rctx || !CONFIG.rain.enabled || motionQuery.matches) return;
+    if (!CONFIG.rain.enabled || motionQuery.matches) return;
     rainLast = performance.now();
     rainCanvas.classList.add('is-visible');
     rainRafId = requestAnimationFrame(rainFrame);
@@ -672,8 +770,10 @@
     words = list.concat(nameWords);
     words.sort((a, b) => a.start - b.start);
     settled = 0;
+    shown = 0;
 
     rain = buildRain(W, H, S, cx, cy, yMid);
+    fxGeom = { W, H, S, cx, cy, yMid };
     return true;
   }
 
@@ -772,6 +872,234 @@
     gctx.globalAlpha = 1;
   }
 
+  function spawnSpark(x, y, vx, vy, opts) {
+    const g = fxGeom;
+    const unit = clamp(g ? g.S / 300 : 1, 0.7, 1.6);
+    sparks.push({
+      x, y, vx, vy,
+      drag: opts.drag || 0,
+      size: (opts.size || rand(2.5, 6)) * unit,
+      life: opts.life || rand(1.6, 3.2),
+      age: 0,
+      phase: Math.random() * 6.28,
+      white: !!opts.white
+    });
+  }
+
+  function spawnFromWord() {
+    if (shown <= 0 || !fxGeom) return;
+    const w = words[Math.floor(Math.random() * shown)];
+    const S = fxGeom.S;
+    spawnSpark(
+      w.x + rand(-6, 6),
+      w.y + rand(-3, 3),
+      rand(-0.03, 0.03) * S,
+      -rand(0.05, 0.14) * S,
+      { white: w.isName, size: w.isName ? rand(1.6, 3) : rand(2.5, 6) }
+    );
+  }
+
+  function burstAt(x, y, count) {
+    const S = fxGeom.S;
+    for (let i = 0; i < count; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const speed = rand(0.1, 0.36) * S;
+      spawnSpark(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed, {
+        drag: 1.6,
+        life: rand(0.9, 1.7),
+        size: rand(2.5, 5.5),
+        white: Math.random() < 0.35
+      });
+    }
+  }
+
+  function emitRipple(opts) {
+    ripples.push({
+      born: performance.now(),
+      life: opts.life,
+      rx: opts.rx,
+      ry: opts.ry,
+      s0: opts.s0,
+      s1: opts.s1,
+      width: opts.width,
+      rgb: opts.rgb,
+      alpha: opts.alpha
+    });
+  }
+
+  function emitBeat() {
+    const g = fxGeom;
+    if (!g) return;
+    emitRipple({ rx: g.cx, ry: g.cy, s0: g.S, s1: g.S * 1.6, life: 1900, width: 2, rgb: '255, 0, 51', alpha: 0.55 });
+    for (let i = 0; i < CONFIG.fx.burstOnBeat; i++) {
+      const p = HEART_OUTLINE[Math.floor(Math.random() * HEART_OUTLINE.length)];
+      const x = g.cx + p.hx * g.S;
+      const y = g.cy - (p.hy - g.yMid) * g.S;
+      const dirX = p.hx;
+      const dirY = -(p.hy - g.yMid);
+      const len = Math.hypot(dirX, dirY) || 1;
+      const speed = rand(0.04, 0.12) * g.S;
+      spawnSpark(x, y, (dirX / len) * speed, (dirY / len) * speed - 0.03 * g.S, {
+        drag: 0.8,
+        life: rand(1.2, 2.4),
+        size: rand(2.5, 5.5)
+      });
+    }
+  }
+
+  function launchRipple() {
+    const g = fxGeom;
+    if (!g) return;
+    emitRipple({ rx: g.cx, ry: g.cy, s0: g.S * 0.15, s1: g.S * 2.6, life: 2600, width: 3, rgb: '255, 225, 232', alpha: 0.85 });
+  }
+
+  function triggerGlitch() {
+    glitchEl.classList.remove('is-glitch');
+    void glitchEl.offsetWidth;
+    glitchEl.classList.add('is-glitch');
+  }
+
+  function triggerFlash() {
+    flashEl.classList.remove('is-on');
+    void flashEl.offsetWidth;
+    flashEl.classList.add('is-on');
+  }
+
+  function drawFx(now) {
+    const g = fxGeom;
+    if (!g) return;
+
+    fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fctx.clearRect(0, 0, g.W, g.H);
+    fctx.globalCompositeOperation = 'lighter';
+
+    for (let i = 0; i < sparks.length; i++) {
+      const s = sparks[i];
+      const u = clamp(s.age / s.life, 0, 1);
+      const alpha = Math.sin(Math.PI * u) * 0.9;
+      const radius = s.size * (0.6 + 0.4 * Math.sin(Math.PI * u));
+      fctx.globalAlpha = alpha;
+      fctx.drawImage(s.white ? SPRITE_WHITE : SPRITE_RED, s.x - radius, s.y - radius, radius * 2, radius * 2);
+    }
+
+    fctx.globalAlpha = 1;
+    fctx.lineJoin = 'round';
+
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i];
+      const age = (now - r.born) / r.life;
+      if (age >= 1) {
+        ripples.splice(i, 1);
+        continue;
+      }
+      const e = easeOutCubic(age);
+      const s = r.s0 + (r.s1 - r.s0) * e;
+      const alpha = r.alpha * Math.pow(1 - age, 1.6);
+
+      fctx.beginPath();
+      for (let k = 0; k < HEART_OUTLINE.length; k++) {
+        const p = HEART_OUTLINE[k];
+        const x = r.rx + p.hx * s;
+        const y = r.ry - (p.hy - g.yMid) * s;
+        if (k === 0) fctx.moveTo(x, y); else fctx.lineTo(x, y);
+      }
+      fctx.closePath();
+      fctx.strokeStyle = `rgba(${r.rgb}, ${alpha.toFixed(3)})`;
+      fctx.lineWidth = Math.max(0.6, r.width * (1 - age * 0.7));
+      fctx.shadowColor = `rgba(${r.rgb}, ${(alpha * 0.9).toFixed(3)})`;
+      fctx.shadowBlur = 12 * dpr;
+      fctx.stroke();
+    }
+
+    fctx.shadowBlur = 0;
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.globalAlpha = 1;
+  }
+
+  function fxFrame(now) {
+    fxRafId = requestAnimationFrame(fxFrame);
+    const g = fxGeom;
+    const dt = Math.min((now - fxLast) / 1000, 0.06);
+    fxLast = now;
+    if (!g) return;
+
+    const fxc = CONFIG.fx;
+    const hb = CONFIG.heartbeat;
+
+    while (heartRunning && shown < words.length && words[shown].start <= now - t0) shown++;
+    const progress = words.length ? shown / words.length : 0;
+
+    let beat = 0;
+    let amp = 0;
+    if (finished && finishedAt) {
+      const el = now - finishedAt;
+      amp = hb.enabled ? easeOutCubic(el / hb.rampMs) : 0;
+      const u = (el % hb.periodMs) / hb.periodMs;
+      beat = 0.9 * pulse(u, 0.08, 0.05) + 0.6 * pulse(u, 0.3, 0.06);
+      const cycle = Math.floor(el / hb.periodMs);
+      if (hb.enabled && cycle !== lastCycle) {
+        lastCycle = cycle;
+        emitBeat();
+      }
+      if (nextGlitch === 0) nextGlitch = now + rand(fxc.glitchMinMs, fxc.glitchMaxMs);
+      if (now >= nextGlitch) {
+        triggerGlitch();
+        nextGlitch = now + rand(fxc.glitchMinMs, fxc.glitchMaxMs);
+      }
+    }
+
+    beatEl.style.transform = `scale(${(1 + hb.scale * beat * amp).toFixed(4)})`;
+
+    if (glowControlled) {
+      glowCanvas.style.opacity = (CONFIG.glowIntensity * amp * (0.3 + 0.7 * beat)).toFixed(3);
+    }
+
+    if (fxc.auraEnabled) {
+      const auraOpacity = 0.22 * progress + 0.5 * amp * (0.25 + 0.75 * beat);
+      auraEl.style.opacity = auraOpacity.toFixed(3);
+      auraEl.style.transform = `translate(-50%, -50%) scale(${(1 + 0.08 * beat * amp).toFixed(4)})`;
+    }
+
+    parX += (pointerX - parX) * 0.06;
+    parY += (pointerY - parY) * 0.06;
+    parallaxEl.style.transform = `translate3d(${(parX * fxc.parallaxX).toFixed(2)}px, ${(parY * fxc.parallaxY).toFixed(2)}px, 0)`;
+    rainWrap.style.transform = `translate3d(${(-parX * fxc.parallaxX * 0.6).toFixed(2)}px, ${(-parY * fxc.parallaxY * 0.6).toFixed(2)}px, 0)`;
+
+    if (heartRunning && shown > 0) {
+      sparkAcc += dt * (finished ? fxc.sparkRateIdle : fxc.sparkRateBuild);
+      while (sparkAcc >= 1) {
+        sparkAcc -= 1;
+        if (sparks.length < fxc.sparkMax) spawnFromWord();
+      }
+    }
+
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.age += dt;
+      if (s.age >= s.life) {
+        sparks.splice(i, 1);
+        continue;
+      }
+      if (s.drag > 0) {
+        const damp = Math.exp(-s.drag * dt);
+        s.vx *= damp;
+        s.vy *= damp;
+      }
+      s.x += (s.vx + Math.sin(s.phase + s.age * 2.2) * 0.02 * g.S) * dt;
+      s.y += s.vy * dt;
+    }
+
+    drawFx(now);
+  }
+
+  function startFx() {
+    if (motionQuery.matches || fxRafId) return;
+    fxLast = performance.now();
+    nextGlitch = 0;
+    glowCanvas.style.transition = 'none';
+    fxRafId = requestAnimationFrame(fxFrame);
+  }
+
   function frame(now) {
     rafId = 0;
     renderAt(Math.max(0, now - t0));
@@ -784,9 +1112,15 @@
 
   function onComplete() {
     finished = true;
+    finishedAt = performance.now();
+    lastCycle = -1;
     if (!CONFIG.glowEnabled) return;
     drawGlow();
-    glowCanvas.classList.add(CONFIG.breathing ? 'is-breathing' : 'is-visible');
+    if (CONFIG.heartbeat.enabled && fxRafId) {
+      glowControlled = true;
+    } else {
+      glowCanvas.classList.add('is-visible');
+    }
   }
 
   function showStatic() {
@@ -799,6 +1133,7 @@
   }
 
   function startHeart() {
+    heartRunning = true;
     if (motionQuery.matches) {
       showStatic();
       return;
@@ -811,16 +1146,37 @@
   function stopAll() {
     if (rafId) cancelAnimationFrame(rafId);
     if (rainRafId) cancelAnimationFrame(rainRafId);
+    if (fxRafId) cancelAnimationFrame(fxRafId);
+    if (bootRafId) cancelAnimationFrame(bootRafId);
     rafId = 0;
     rainRafId = 0;
+    fxRafId = 0;
+    bootRafId = 0;
     clearTimeout(resizeTimer);
   }
 
   function init() {
     stopAll();
-    glowCanvas.classList.remove('is-visible', 'is-breathing');
-    if (rainCanvas) rainCanvas.classList.remove('is-visible');
+    if (booting) {
+      booting = false;
+      bootEl.classList.remove('is-active', 'is-fading');
+    }
+    glowCanvas.classList.remove('is-visible');
+    glowCanvas.style.opacity = '';
+    glowCanvas.style.transition = '';
+    rainCanvas.classList.remove('is-visible');
+    beatEl.style.transform = '';
+    parallaxEl.style.transform = '';
+    rainWrap.style.transform = '';
+    auraEl.style.opacity = '0';
+    sparks = [];
+    ripples = [];
+    sparkAcc = 0;
     finished = false;
+    finishedAt = 0;
+    lastCycle = -1;
+    glowControlled = false;
+    heartRunning = false;
     started = false;
     settled = 0;
 
@@ -828,34 +1184,107 @@
     started = true;
 
     startRain();
-    if (entered) startHeart();
+    if (entered) {
+      startHeart();
+      startFx();
+    }
+  }
+
+  function bar(p) {
+    const filled = Math.round(p * 10);
+    return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${Math.round(p * 100)}%`;
+  }
+
+  function bootFrame(now) {
+    bootRafId = requestAnimationFrame(bootFrame);
+    const t = now - bootStart;
+    const steps = CONFIG.boot.steps;
+    let out = '';
+    let acc = 0;
+    let done = true;
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const typeDur = step.text.length * step.speed;
+      const progDur = step.progress || 0;
+      const total = typeDur + progDur + step.pause;
+
+      if (t >= acc + total) {
+        out += step.text + (progDur ? ' ' + bar(1) : '') + '\n';
+        acc += total;
+        continue;
+      }
+
+      done = false;
+      const local = t - acc;
+      if (local < typeDur) {
+        out += step.text.slice(0, Math.floor(local / step.speed));
+      } else {
+        out += step.text;
+        if (progDur) out += ' ' + bar(clamp((local - typeDur) / progDur, 0, 1));
+      }
+      out += Math.floor(now / 260) % 2 === 0 ? '█' : ' ';
+      break;
+    }
+
+    bootTextEl.textContent = out;
+
+    if (done) {
+      cancelAnimationFrame(bootRafId);
+      bootRafId = 0;
+      launchHeart();
+    }
+  }
+
+  function runBoot() {
+    booting = true;
+    bootTextEl.textContent = '';
+    bootEl.classList.remove('is-fading');
+    bootEl.classList.add('is-active');
+    bootStart = performance.now();
+    bootRafId = requestAnimationFrame(bootFrame);
+  }
+
+  function launchHeart() {
+    booting = false;
+    bootEl.classList.add('is-fading');
+    clearTimeout(bootHideTimer);
+    bootHideTimer = setTimeout(() => bootEl.classList.remove('is-active', 'is-fading'), 700);
+
+    if (!started) {
+      init();
+    } else {
+      startHeart();
+      startFx();
+    }
+
+    triggerFlash();
+    triggerGlitch();
+    launchRipple();
   }
 
   function enter() {
     if (entered) return;
     entered = true;
 
-    if (audioEl) {
-      audioEl.volume = CONFIG.audioVolume;
-      audioEl.play().catch(() => {});
+    audioEl.volume = CONFIG.audioVolume;
+    audioEl.play().catch(() => {});
+
+    gate.classList.add('is-hidden');
+    gateTimer = setTimeout(() => gate.classList.add('is-gone'), CONFIG.gateFadeMs);
+
+    if (motionQuery.matches) {
+      if (!started) init(); else startHeart();
+      return;
     }
 
-    if (gate) {
-      gate.classList.add('is-hidden');
-      gateTimer = setTimeout(() => gate.classList.add('is-gone'), CONFIG.gateFadeMs);
-    }
-
-    if (!started) {
-      init();
-    } else {
-      startHeart();
-    }
+    runBoot();
   }
 
   function handleResize() {
     if (!started) { init(); return; }
     if (!buildLayout()) return;
-    if (!entered) return;
+    if (!heartRunning) return;
     if (finished) {
       renderAt(Infinity);
       if (CONFIG.glowEnabled) drawGlow();
@@ -869,6 +1298,33 @@
     resizeTimer = setTimeout(handleResize, 120);
   }
 
+  glitchEl.addEventListener('animationend', () => glitchEl.classList.remove('is-glitch'));
+  flashEl.addEventListener('animationend', () => flashEl.classList.remove('is-on'));
+
+  bootEl.addEventListener('pointerdown', () => {
+    if (booting) bootStart = -1e9;
+  });
+
+  stage.addEventListener('pointerdown', (e) => {
+    if (!heartRunning || !fxGeom || !fxRafId) return;
+    burstAt(e.clientX, e.clientY, CONFIG.fx.tapBurst);
+    emitRipple({
+      rx: e.clientX,
+      ry: e.clientY,
+      s0: fxGeom.S * 0.03,
+      s1: fxGeom.S * 0.26,
+      life: 1300,
+      width: 2,
+      rgb: '255, 130, 160',
+      alpha: 0.85
+    });
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    pointerX = (e.clientX / window.innerWidth - 0.5) * 2;
+    pointerY = (e.clientY / window.innerHeight - 0.5) * 2;
+  }, { passive: true });
+
   window.addEventListener('resize', scheduleResize);
   window.addEventListener('orientationchange', scheduleResize);
   if (motionQuery.addEventListener) motionQuery.addEventListener('change', init);
@@ -876,19 +1332,18 @@
   window.addEventListener('pagehide', () => {
     stopAll();
     clearTimeout(gateTimer);
-    if (audioEl) audioEl.pause();
+    clearTimeout(bootHideTimer);
+    audioEl.pause();
   });
 
   window.addEventListener('pageshow', (e) => {
     if (!e.persisted) return;
     init();
-    if (entered && audioEl) audioEl.play().catch(() => {});
+    if (entered) audioEl.play().catch(() => {});
   });
 
-  if (gateButton) {
-    gateButton.addEventListener('click', enter);
-    gateButton.focus({ preventScroll: true });
-  }
+  gateButton.addEventListener('click', enter);
+  gateButton.focus({ preventScroll: true });
 
   init();
 })();

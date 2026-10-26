@@ -10,18 +10,35 @@
 </head>
 <body>
   <main class="stage" id="stage">
-    <canvas id="rain-canvas" class="layer rain" aria-hidden="true"></canvas>
+    <div class="aura" id="aura" aria-hidden="true"></div>
 
-    <canvas id="glow-canvas" class="layer glow" aria-hidden="true"></canvas>
+    <div class="wrap" id="rain-wrap">
+      <canvas id="rain-canvas" class="layer rain" aria-hidden="true"></canvas>
+    </div>
 
-    <canvas id="heart-canvas" class="layer" role="img"
-            aria-label="Un corazón formado por las palabras I love you"></canvas>
+    <div class="wrap" id="parallax">
+      <div class="wrap glitch" id="glitch">
+        <div class="wrap" id="beat">
+          <canvas id="glow-canvas" class="layer glow" aria-hidden="true"></canvas>
+          <canvas id="heart-canvas" class="layer" role="img"
+                  aria-label="Un corazón formado por las palabras I love you"></canvas>
+        </div>
+      </div>
+    </div>
 
-    <div id="recipient-name" class="recipient-name">(Nombre)</div>
+    <canvas id="fx-canvas" class="layer fx" aria-hidden="true"></canvas>
+
+    <div id="recipient-name" class="recipient-name">(nombre)</div>
+
+    <div id="boot" class="boot" aria-hidden="true">
+      <pre id="boot-text" class="boot-text"></pre>
+    </div>
+
+    <div id="flash" class="flash" aria-hidden="true"></div>
 
     <div id="gate" class="gate">
       <p class="gate-line">&gt; 1 mensaje nuevo<span class="gate-cursor" aria-hidden="true"></span></p>
-      <button id="gate-button" class="gate-button" type="button">Mensaje en tu sistema. . . ;)</button>
+      <button id="gate-button" class="gate-button" type="button">Mensaje en tu sistema... ;)</button>
     </div>
   </main>
 
